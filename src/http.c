@@ -2,14 +2,35 @@
 
 #include "files.h"
 
+#include <alloca.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
-void http_serve(int fd, const char* method, const char* uri) {
+void http_serve(int fd, const char* method, char* uri) {
   if (0 != strcmp(method, "GET")) {
     dprintf(fd, "HTTP/1.0 405 Method Not Allowed\r\n\r\n");
     return;
+  }
+
+  char** argv = NULL;
+  int argc = 0;
+  char* args_begin = strchr(uri, '?');
+  if (args_begin != NULL) {
+    *args_begin++ = 0;
+    argc = 1;
+    for (const char* p = args_begin; *p; ++p)
+      if (*p == '&')
+        argc += 1;
+    argv = (char**)alloca(sizeof(char*) * argc);
+    char** args_it = argv;
+    *args_it++ = args_begin;
+    for (char* p = args_begin; *p; ++p) {
+      if (*p == '&') {
+        *p = 0;
+        *args_it++ = p + 1;
+      }
+    }
   }
 
   for (const struct served_file* file = SERVED_FILES; file->path; ++file) {
@@ -17,7 +38,7 @@ void http_serve(int fd, const char* method, const char* uri) {
       continue;
 
     dprintf(fd, "HTTP/1.0 200 OK\r\n%s\r\n", file->headers ? file->headers : "");
-    file->fn(fd);
+    file->fn(fd, argc, argv);
     return;
   }
 

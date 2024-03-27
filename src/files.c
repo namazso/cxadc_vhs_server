@@ -11,8 +11,7 @@
 #include <stdio.h>
 
 servefile_fn file_root;
-servefile_fn file_cxadc0;
-servefile_fn file_cxadc1;
+servefile_fn file_cxadc;
 servefile_fn file_linear;
 servefile_fn file_start;
 servefile_fn file_stop;
@@ -20,9 +19,8 @@ servefile_fn file_stats;
 
 struct served_file SERVED_FILES[] = {
   {"/", "Content-Type: text/html; charset=utf-8\r\n", file_root},
-  {"/cxadc0", "Content-Disposition: attachment; filename=\"cxadc0.u8\"\r\n", file_cxadc0},
-  {"/cxadc1", "Content-Disposition: attachment; filename=\"cxadc1.u8\"\r\n", file_cxadc1},
-  {"/linear", "Content-Disposition: attachment; filename=\"linear.raw\"\r\n", file_linear},
+  {"/cxadc", "Content-Disposition: attachment\r\n", file_cxadc},
+  {"/linear", "Content-Disposition: attachment\r\n", file_linear},
   {"/start", "Content-Type: text/json; charset=utf-8\r\n", file_start},
   {"/stop", "Content-Type: text/json; charset=utf-8\r\n", file_stop},
   {"/stats", "Content-Type: text/json; charset=utf-8\r\n", file_stats},
@@ -120,31 +118,39 @@ const char* capture_state_to_str(enum capture_state state) {
   return NAMES[(int)state];
 }
 
+struct cxadc_state {
+  int fd;
+  pthread_t writer_thread;
+  struct atomic_ringbuffer ring_buffer;
+
+  // This is special and not protected by cap_state
+  _Atomic pthread_t reader_thread;
+};
+
 struct {
   _Atomic enum capture_state cap_state;
+  struct cxadc_state cxadc[256];
+  size_t cxadc_count;
 
   struct {
+    snd_pcm_t* handle;
     pthread_t writer_thread;
     struct atomic_ringbuffer ring_buffer;
 
     // This is special and not protected by cap_state
     _Atomic pthread_t reader_thread;
-  } cxadc0, cxadc1, linear;
+  } linear;
 
-  int cxadc0_fd;
-  int cxadc1_fd;
-  snd_pcm_t* linear_pcm_handle;
 } g_state;
 
-void* cxadc0_writer_thread(void*);
-void* cxadc1_writer_thread(void*);
+void* cxadc_writer_thread(void* id);
 void* linear_writer_thread(void*);
 
 static ssize_t timespec_to_nanos(const struct timespec* ts) {
   return (ssize_t)ts->tv_nsec + (ssize_t)ts->tv_sec * 1000000000;
 }
 
-void file_start(int fd) {
+void file_start(int fd, int argc, char** argv) {
   static const int MODE = SND_PCM_NONBLOCK | SND_PCM_NO_AUTO_RESAMPLE | SND_PCM_NO_AUTO_CHANNELS | SND_PCM_NO_AUTO_FORMAT | SND_PCM_NO_SOFTVOL;
   static const unsigned int RATE = 78125;
   static const unsigned int CHANNELS = 3;
@@ -155,12 +161,23 @@ void file_start(int fd) {
     return;
   }
 
-  if (!atomic_ringbuffer_init(&g_state.cxadc0.ring_buffer, 1 << 30)) {
-    goto error;
+  unsigned cxadc_array[256];
+  unsigned cxadc_count = 0;
+  for (int i = 0; i < argc; ++i) {
+    unsigned num;
+    if (1 == sscanf(argv[i], "cxadc%u", &num)) {
+      cxadc_array[cxadc_count++] = num;
+      if (cxadc_count == sizeof(cxadc_array) / sizeof(*cxadc_array))
+        break;
+    }
   }
-  if (!atomic_ringbuffer_init(&g_state.cxadc1.ring_buffer, 1 << 30)) {
-    goto error;
+
+  for (size_t i = 0; i < cxadc_count; ++i) {
+    if (!atomic_ringbuffer_init(&g_state.cxadc[i].ring_buffer, 1 << 30)) {
+      goto error;
+    }
   }
+
   if (!atomic_ringbuffer_init(&g_state.linear.ring_buffer, 9 * 2 << 20)) {
     goto error;
   }
@@ -241,17 +258,18 @@ void file_start(int fd) {
 
   snd_pcm_start(handle);
 
-  const int cxadc0_fd = open("/dev/cxadc0", O_NONBLOCK);
-  if (cxadc0_fd < 0) {
-    perror("cannot open cxadc0");
-    goto error;
+  for (size_t i = 0; i < cxadc_count; ++i) {
+    char cxadc_name[32];
+    sprintf(cxadc_name, "/dev/cxadc%u", cxadc_array[i]);
+    const int cxadc_fd = open(cxadc_name, O_NONBLOCK);
+    if (cxadc_fd < 0) {
+      perror("cannot open cxadc");
+      goto error;
+    }
+    g_state.cxadc[i].fd = cxadc_fd;
   }
 
-  const int cxadc1_fd = open("/dev/cxadc1", O_NONBLOCK);
-  if (cxadc1_fd < 0) {
-    perror("cannot open cxadc1");
-    goto error;
-  }
+  g_state.cxadc_count = cxadc_count;
 
   struct timespec time2;
   clock_gettime(CLOCK_MONOTONIC_RAW, &time2);
@@ -259,23 +277,18 @@ void file_start(int fd) {
   const long ns = timespec_to_nanos(&time2) - timespec_to_nanos(&time1);
   printf("starting capture took %ldns\n", ns);
 
-  g_state.linear_pcm_handle = handle;
-  g_state.cxadc0_fd = cxadc0_fd;
-  g_state.cxadc1_fd = cxadc1_fd;
+  g_state.linear.handle = handle;
+
+  for (size_t i = 0; i < cxadc_count; ++i) {
+    pthread_t thread_id;
+    if ((err = pthread_create(&thread_id, NULL, cxadc_writer_thread, (void*)i) != 0)) {
+      fprintf(stderr, "can't create cxadc writer thread: %d\n", err);
+      goto error;
+    }
+    g_state.cxadc[i].writer_thread = thread_id;
+  }
 
   pthread_t thread_id;
-  if ((err = pthread_create(&thread_id, NULL, cxadc0_writer_thread, NULL) != 0)) {
-    fprintf(stderr, "can't create cxadc0 writer thread: %d\n", err);
-    goto error;
-  }
-  g_state.cxadc0.writer_thread = thread_id;
-
-  if ((err = pthread_create(&thread_id, NULL, cxadc1_writer_thread, NULL) != 0)) {
-    fprintf(stderr, "can't create cxadc1 writer thread: %d\n", err);
-    goto error;
-  }
-  g_state.cxadc1.writer_thread = thread_id;
-
   if ((err = pthread_create(&thread_id, NULL, linear_writer_thread, NULL) != 0)) {
     fprintf(stderr, "can't create linear writer thread: %d\n", err);
     goto error;
@@ -291,7 +304,10 @@ error:
   dprintf(fd, "{\"state\": \"%s\"}", capture_state_to_str(State_Failed));
 }
 
-void* cxadc_writer_thread(struct atomic_ringbuffer* buf, int fd) {
+void* cxadc_writer_thread(void* id) {
+  struct atomic_ringbuffer* buf = &g_state.cxadc[(size_t)id].ring_buffer;
+  const int fd = g_state.cxadc[(size_t)id].fd;
+
   while (g_state.cap_state != State_Stopping) {
     void* ptr = atomic_ringbuffer_get_write_ptr(buf);
     size_t len = atomic_ringbuffer_get_write_size(buf);
@@ -319,7 +335,7 @@ void* cxadc_writer_thread(struct atomic_ringbuffer* buf, int fd) {
 void* linear_writer_thread(void* arg) {
   (void)arg;
   struct atomic_ringbuffer* buf = &g_state.linear.ring_buffer;
-  snd_pcm_t* handle = g_state.linear_pcm_handle;
+  snd_pcm_t* handle = g_state.linear.handle;
 
   while (g_state.cap_state != State_Stopping) {
     void* ptr = atomic_ringbuffer_get_write_ptr(buf);
@@ -346,35 +362,31 @@ void* linear_writer_thread(void* arg) {
   return NULL;
 }
 
-void* cxadc0_writer_thread(void* arg) {
-  (void)arg;
-  return cxadc_writer_thread(&g_state.cxadc0.ring_buffer, g_state.cxadc0_fd);
-}
-
-void* cxadc1_writer_thread(void* arg) {
-  (void)arg;
-  return cxadc_writer_thread(&g_state.cxadc1.ring_buffer, g_state.cxadc1_fd);
-}
-
-void file_stop(int fd) {
+void file_stop(int fd, int argc, char** argv) {
+  (void)argc;
+  (void)argv;
   enum capture_state expected = State_Running;
   if (!atomic_compare_exchange_strong(&g_state.cap_state, &expected, State_Stopping)) {
     dprintf(fd, "{\"state\": \"%s\"}", capture_state_to_str(expected));
     return;
   }
 
-  pthread_join(g_state.cxadc0.writer_thread, NULL);
-  pthread_join(g_state.cxadc1.writer_thread, NULL);
+  for (size_t i = 0; i < g_state.cxadc_count; ++i)
+    pthread_join(g_state.cxadc[i].writer_thread, NULL);
+
   pthread_join(g_state.linear.writer_thread, NULL);
-  while (g_state.cxadc0.reader_thread || g_state.cxadc1.reader_thread || g_state.linear.reader_thread)
+
+  while (g_state.linear.reader_thread)
     usleep(100000);
 
-  atomic_ringbuffer_free(&g_state.cxadc0.ring_buffer);
-  g_state.cxadc0.writer_thread = 0;
-  g_state.cxadc0.reader_thread = 0;
-  atomic_ringbuffer_free(&g_state.cxadc1.ring_buffer);
-  g_state.cxadc1.writer_thread = 0;
-  g_state.cxadc1.reader_thread = 0;
+  for (size_t i = 0; i < g_state.cxadc_count; ++i) {
+    while (g_state.cxadc[i].reader_thread)
+      usleep(100000);
+    atomic_ringbuffer_free(&g_state.cxadc[i].ring_buffer);
+    g_state.cxadc[i].writer_thread = 0;
+    g_state.cxadc[i].reader_thread = 0;
+  }
+
   atomic_ringbuffer_free(&g_state.linear.ring_buffer);
   g_state.linear.writer_thread = 0;
   g_state.linear.reader_thread = 0;
@@ -384,8 +396,10 @@ void file_stop(int fd) {
   dprintf(fd, "{\"state\": \"%s\"}", capture_state_to_str(State_Idle));
 }
 
-void file_root(int fd) {
-  dprintf(fd, "Hello World!");
+void file_root(int fd, int argc, char** argv) {
+  (void)argc;
+  (void)argv;
+  dprintf(fd, "Hello World!\n");
 }
 
 void pump_ringbuffer_to_fd(int fd, struct atomic_ringbuffer* buf, _Atomic pthread_t* pt) {
@@ -421,18 +435,23 @@ void pump_ringbuffer_to_fd(int fd, struct atomic_ringbuffer* buf, _Atomic pthrea
   *pt = 0;
 }
 
-void file_cxadc0(int fd) {
-  pump_ringbuffer_to_fd(fd, &g_state.cxadc0.ring_buffer, &g_state.cxadc0.reader_thread);
+void file_cxadc(int fd, int argc, char** argv) {
+  if (argc != 1)
+    return;
+  unsigned id;
+  if (1 != sscanf(argv[0], "%u", &id) || id >= 256)
+    return;
+  pump_ringbuffer_to_fd(fd, &g_state.cxadc[id].ring_buffer, &g_state.cxadc[id].reader_thread);
 }
 
-void file_cxadc1(int fd) {
-  pump_ringbuffer_to_fd(fd, &g_state.cxadc1.ring_buffer, &g_state.cxadc1.reader_thread);
-}
-
-void file_linear(int fd) {
+void file_linear(int fd, int argc, char** argv) {
+  (void)argc;
+  (void)argv;
   pump_ringbuffer_to_fd(fd, &g_state.linear.ring_buffer, &g_state.linear.reader_thread);
 }
 
-void file_stats(int fd) {
+void file_stats(int fd, int argc, char** argv) {
   (void)fd;
+  (void)argc;
+  (void)argv;
 }

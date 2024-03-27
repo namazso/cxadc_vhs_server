@@ -1,6 +1,6 @@
 #pragma once
 
-typedef void(servefile_fn)(int fd);
+typedef void(servefile_fn)(int fd, int argc, char** argv);
 
 void* http_thread(void* arg);
 
