@@ -17,14 +17,14 @@ Then you can queue up the download of the streams:
 ```text
 $ aria2c -Z \
     http://192.168.1.1:8080/linear \
-    http://192.168.1.1:8080/cxadc0 \
-    http://192.168.1.1:8080/cxadc1
+    http://192.168.1.1:8080/cxadc?0 \
+    http://192.168.1.1:8080/cxadc?1
 ```
 
 Then start the capture:
 
 ```text
-$ curl http://192.168.1.1:8080/start
+$ curl http://192.168.1.1:8080/start?cxadc0&cxadc1
 ```
 
 Once you're done, you just need to stop it:
