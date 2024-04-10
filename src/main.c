@@ -29,6 +29,12 @@ int main(int argc, char* argv[]) {
     exit(EXIT_FAILURE);
   }
 
+  int reuseaddr = 1;
+  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr))) {
+    perror("setsockopt failed");
+    exit(EXIT_FAILURE);
+  }
+
   // config socket
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = INADDR_ANY;
