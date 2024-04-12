@@ -218,11 +218,6 @@ void file_start(int fd, int argc, char** argv) {
     goto error;
   }
 
-  if ((err = snd_pcm_hw_params(handle, hw_params)) < 0) {
-    fprintf(stderr, "cannot set hw parameters: %s\n", snd_strerror(err));
-    goto error;
-  }
-
   snd_pcm_sw_params_t* sw_params = NULL;
   snd_pcm_sw_params_alloca(&sw_params);
 
@@ -241,6 +236,14 @@ void file_start(int fd, int argc, char** argv) {
     goto error;
   }
 
+  struct timespec time1;
+  clock_gettime(CLOCK_MONOTONIC_RAW, &time1);
+
+  if ((err = snd_pcm_hw_params(handle, hw_params)) < 0) {
+    fprintf(stderr, "cannot set hw parameters: %s\n", snd_strerror(err));
+    goto error;
+  }
+
   if ((err = snd_pcm_sw_params(handle, sw_params)) < 0) {
     fprintf(stderr, "cannot set hw parameters: %s\n", snd_strerror(err));
     goto error;
@@ -251,10 +254,10 @@ void file_start(int fd, int argc, char** argv) {
     goto error;
   }
 
-  struct timespec time1;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &time1);
-
   snd_pcm_start(handle);
+
+  struct timespec time2;
+  clock_gettime(CLOCK_MONOTONIC_RAW, &time2);
 
   for (size_t i = 0; i < cxadc_count; ++i) {
     char cxadc_name[32];
@@ -269,11 +272,12 @@ void file_start(int fd, int argc, char** argv) {
 
   g_state.cxadc_count = cxadc_count;
 
-  struct timespec time2;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &time2);
+  struct timespec time3;
+  clock_gettime(CLOCK_MONOTONIC_RAW, &time3);
 
-  const long ns = timespec_to_nanos(&time2) - timespec_to_nanos(&time1);
-  printf("starting capture took %ldns\n", ns);
+  const long linear_ns = timespec_to_nanos(&time2) - timespec_to_nanos(&time1);
+  const long cxadc_ns = timespec_to_nanos(&time3) - timespec_to_nanos(&time2);
+  printf("starting linear took %ldns, starting cxadc took %ldns\n", linear_ns, cxadc_ns);
 
   g_state.linear.handle = handle;
 
@@ -294,7 +298,7 @@ void file_start(int fd, int argc, char** argv) {
   g_state.linear.writer_thread = thread_id;
 
   g_state.cap_state = State_Running;
-  dprintf(fd, "{\"state\": \"%s\", \"time_ns\": %ld}", capture_state_to_str(State_Running), ns);
+  dprintf(fd, "{\"state\": \"%s\", \"linear_ns\": %ld, \"cxadc_ns\": %ld}", capture_state_to_str(State_Running), linear_ns, cxadc_ns);
   return;
 
 error:
