@@ -251,8 +251,6 @@ void file_start(int fd, int argc, char** argv) {
     goto error;
   }
 
-  usleep(200000);
-
   struct timespec time1;
   clock_gettime(CLOCK_MONOTONIC_RAW, &time1);
 
