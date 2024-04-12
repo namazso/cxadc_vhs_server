@@ -131,6 +131,7 @@ struct {
   _Atomic enum capture_state cap_state;
   struct cxadc_state cxadc[256];
   size_t cxadc_count;
+  _Atomic size_t overflow_counter;
 
   struct {
     snd_pcm_t* handle;
@@ -171,6 +172,8 @@ void file_start(int fd, int argc, char** argv) {
         break;
     }
   }
+
+  g_state.overflow_counter = 0;
 
   for (size_t i = 0; i < cxadc_count; ++i) {
     if (!atomic_ringbuffer_init(&g_state.cxadc[i].ring_buffer, 1 << 30)) {
@@ -314,6 +317,7 @@ void* cxadc_writer_thread(void* id) {
     void* ptr = atomic_ringbuffer_get_write_ptr(buf);
     size_t len = atomic_ringbuffer_get_write_size(buf);
     if (len == 0) {
+      ++g_state.overflow_counter;
       fprintf(stderr, "ringbuffer full, may be dropping samples!!! THIS IS BAD!\n");
       usleep(1000);
       continue;
@@ -342,12 +346,14 @@ void* linear_writer_thread(void* arg) {
   while (g_state.cap_state != State_Stopping) {
     void* ptr = atomic_ringbuffer_get_write_ptr(buf);
     size_t len = atomic_ringbuffer_get_write_size(buf);
-    if (len == 0) {
+    size_t len_samples = len / 9;
+    if (len_samples == 0) {
+      ++g_state.overflow_counter;
       fprintf(stderr, "ringbuffer full, may be dropping samples!!! THIS IS BAD!\n");
       usleep(1000);
       continue;
     }
-    int count = snd_pcm_readi(handle, ptr, len / 9);
+    int count = snd_pcm_readi(handle, ptr, len_samples);
     if (count == 0 || count == -EAGAIN) {
       usleep(1);
       continue;
@@ -395,7 +401,7 @@ void file_stop(int fd, int argc, char** argv) {
 
   g_state.cap_state = State_Idle;
 
-  dprintf(fd, "{\"state\": \"%s\"}", capture_state_to_str(State_Idle));
+  dprintf(fd, "{\"state\": \"%s\", \"overflows\": %ld}", capture_state_to_str(State_Idle), g_state.overflow_counter);
 }
 
 void file_root(int fd, int argc, char** argv) {
