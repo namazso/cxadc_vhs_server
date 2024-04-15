@@ -221,6 +221,14 @@ void file_start(int fd, int argc, char** argv) {
     goto error;
   }
 
+  struct timespec time1;
+  clock_gettime(CLOCK_MONOTONIC_RAW, &time1);
+
+  if ((err = snd_pcm_hw_params(handle, hw_params)) < 0) {
+    fprintf(stderr, "cannot set hw parameters: %s\n", snd_strerror(err));
+    goto error;
+  }
+
   snd_pcm_sw_params_t* sw_params = NULL;
   snd_pcm_sw_params_alloca(&sw_params);
 
@@ -239,16 +247,8 @@ void file_start(int fd, int argc, char** argv) {
     goto error;
   }
 
-  struct timespec time1;
-  clock_gettime(CLOCK_MONOTONIC_RAW, &time1);
-
-  if ((err = snd_pcm_hw_params(handle, hw_params)) < 0) {
-    fprintf(stderr, "cannot set hw parameters: %s\n", snd_strerror(err));
-    goto error;
-  }
-
   if ((err = snd_pcm_sw_params(handle, sw_params)) < 0) {
-    fprintf(stderr, "cannot set hw parameters: %s\n", snd_strerror(err));
+    fprintf(stderr, "cannot set sw parameters: %s\n", snd_strerror(err));
     goto error;
   }
 
