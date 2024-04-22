@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <sys/mman.h>
 
+#include <ctype.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -151,10 +152,36 @@ static ssize_t timespec_to_nanos(const struct timespec* ts) {
   return (ssize_t)ts->tv_nsec + (ssize_t)ts->tv_sec * 1000000000;
 }
 
+static void urldecode2(char* dst, const char* src) {
+  char a, b;
+  while (*src) {
+    if ((*src == '%') && ((a = src[1]) && (b = src[2])) && (isxdigit(a) && isxdigit(b))) {
+      if (a >= 'a')
+        a -= 'a' - 'A';
+      if (a >= 'A')
+        a -= ('A' - 10);
+      else
+        a -= '0';
+      if (b >= 'a')
+        b -= 'a' - 'A';
+      if (b >= 'A')
+        b -= ('A' - 10);
+      else
+        b -= '0';
+      *dst++ = (char)(16 * a + b);
+      src += 3;
+    } else if (*src == '+') {
+      *dst++ = ' ';
+      src++;
+    } else {
+      *dst++ = *src++;
+    }
+  }
+  *dst++ = '\0';
+}
+
 void file_start(int fd, int argc, char** argv) {
   static const int MODE = SND_PCM_NONBLOCK | SND_PCM_NO_AUTO_RESAMPLE | SND_PCM_NO_AUTO_CHANNELS | SND_PCM_NO_AUTO_FORMAT | SND_PCM_NO_SOFTVOL;
-  static const unsigned int RATE = 78125;
-  static const unsigned int CHANNELS = 3;
 
   enum capture_state expected = State_Idle;
   if (!atomic_compare_exchange_strong(&g_state.cap_state, &expected, State_Starting)) {
@@ -164,14 +191,40 @@ void file_start(int fd, int argc, char** argv) {
 
   unsigned cxadc_array[256];
   unsigned cxadc_count = 0;
+
+  char linear_name[64];
+  strcpy(linear_name, "hw:CARD=CXADCADCClockGe");
+  unsigned int linear_rate = 78125;
+  unsigned int linear_channels = 3;
+
   for (int i = 0; i < argc; ++i) {
     unsigned num;
     if (1 == sscanf(argv[i], "cxadc%u", &num)) {
-      cxadc_array[cxadc_count++] = num;
-      if (cxadc_count == sizeof(cxadc_array) / sizeof(*cxadc_array))
-        break;
+      if (cxadc_count < sizeof(cxadc_array) / sizeof(*cxadc_array))
+        cxadc_array[cxadc_count++] = num;
+      continue;
+    }
+    char urlencoded[64];
+    if (1 == sscanf(argv[i], "lname=%63s", urlencoded)) {
+      urldecode2(linear_name, urlencoded);
+      continue;
+    }
+    unsigned int rate = 0;
+    if (1 == sscanf(argv[i], "lrate=%u", &rate) && rate >= 22050 && rate <= 384000) {
+      linear_rate = rate;
+      continue;
+    }
+    unsigned int channels = 0;
+    if (1 == sscanf(argv[i], "lchannels=%u", &channels) && channels >= 1 && channels <= 16) {
+      linear_channels = channels;
+      continue;
     }
   }
+
+
+  for (int i = 0; i < argc; ++i) {
+  }
+
 
   g_state.overflow_counter = 0;
 
@@ -181,13 +234,13 @@ void file_start(int fd, int argc, char** argv) {
     }
   }
 
-  if (!atomic_ringbuffer_init(&g_state.linear.ring_buffer, 9 * 2 << 20)) {
+  if (!atomic_ringbuffer_init(&g_state.linear.ring_buffer, (2 << 20) * 3 * linear_channels)) {
     goto error;
   }
 
   int err;
   snd_pcm_t* handle;
-  if ((err = snd_pcm_open(&handle, "hw:CARD=CXADCADCClockGe", SND_PCM_STREAM_CAPTURE, MODE)) < 0) {
+  if ((err = snd_pcm_open(&handle, linear_name, SND_PCM_STREAM_CAPTURE, MODE)) < 0) {
     fprintf(stderr, "cannot open ALSA device: %s\n", snd_strerror(err));
     goto error;
   }
@@ -210,13 +263,12 @@ void file_start(int fd, int argc, char** argv) {
     goto error;
   }
 
-  unsigned int rate = RATE;
-  if ((err = snd_pcm_hw_params_set_rate_near(handle, hw_params, &rate, 0)) < 0) {
+  if ((err = snd_pcm_hw_params_set_rate_near(handle, hw_params, &linear_rate, 0)) < 0) {
     fprintf(stderr, "cannot set sample rate: %s\n", snd_strerror(err));
     goto error;
   }
 
-  if ((err = snd_pcm_hw_params_set_channels(handle, hw_params, CHANNELS)) < 0) {
+  if ((err = snd_pcm_hw_params_set_channels(handle, hw_params, linear_channels)) < 0) {
     fprintf(stderr, "cannot set channel count: %s\n", snd_strerror(err));
     goto error;
   }
