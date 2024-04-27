@@ -11,7 +11,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "version.h"
+
 servefile_fn file_root;
+servefile_fn file_version;
 servefile_fn file_cxadc;
 servefile_fn file_linear;
 servefile_fn file_start;
@@ -20,6 +23,7 @@ servefile_fn file_stats;
 
 struct served_file SERVED_FILES[] = {
   {"/", "Content-Type: text/html; charset=utf-8\r\n", file_root},
+  {"/version", "Content-Type: text/plain; charset=utf-8\r\n", file_version},
   {"/cxadc", "Content-Disposition: attachment\r\n", file_cxadc},
   {"/linear", "Content-Disposition: attachment\r\n", file_linear},
   {"/start", "Content-Type: text/json; charset=utf-8\r\n", file_start},
@@ -552,6 +556,12 @@ void file_root(int fd, int argc, char** argv) {
   (void)argc;
   (void)argv;
   dprintf(fd, "Hello World!\n");
+}
+
+void file_version(int fd, int argc, char** argv) {
+  (void)argc;
+  (void)argv;
+  dprintf(fd, "%s\n", CXADC_VHS_SERVER_VERSION);
 }
 
 void pump_ringbuffer_to_fd(int fd, struct atomic_ringbuffer* buf, _Atomic pthread_t* pt) {

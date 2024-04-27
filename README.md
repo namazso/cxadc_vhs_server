@@ -11,6 +11,7 @@ A terrible HTTP server made for capturing VHS with two cxadc cards and [cxadc-cl
 Endpoints provided:
 
 - GET `/`: Hello world.
+- GET `/version`: Version.
 - GET `/start`: Start a capture. Returns a JSON with stats. Parameters:
   - `cxadc<number>`: Capture `/dev/cxadc<number>` 
   - `lname=<device name>`: Use `<device name>` ALSA device for capture. Defaults to `hw:CARD=CXADCADCClockGe`

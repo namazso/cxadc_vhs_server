@@ -13,6 +13,12 @@ target_compile_options(cxadc_vhs_server PRIVATE
         -Wpedantic
         -Wextra)
 
+target_compile_definitions(cxadc_vhs_server PRIVATE
+        CXADC_VHS_SERVER_MAJOR=1
+        CXADC_VHS_SERVER_MINOR=3
+        CXADC_VHS_SERVER_PATCH=0
+)
+
 target_link_libraries(cxadc_vhs_server PRIVATE
         asound
         pthread)
