@@ -52,7 +52,6 @@ bool atomic_ringbuffer_init(struct atomic_ringbuffer* ctx, size_t buf_size) {
     buf = mmap(NULL, buf_size, PROT_READ | PROT_WRITE, FLAGS, -1, 0);
 
   if (MAP_FAILED == buf) {
-    perror("ringbuffer allocation failed");
     return false;
   }
 
@@ -67,7 +66,8 @@ bool atomic_ringbuffer_init(struct atomic_ringbuffer* ctx, size_t buf_size) {
 }
 
 void atomic_ringbuffer_free(struct atomic_ringbuffer* ctx) {
-  munmap(ctx->buf, ctx->buf_size);
+  if (ctx->buf)
+    munmap(ctx->buf, ctx->buf_size);
   ctx->buf = NULL;
 }
 
@@ -189,24 +189,36 @@ void file_start(int fd, int argc, char** argv) {
     return;
   }
 
+  char errstr[256];
+  memset(errstr, 0, sizeof(errstr));
+
   unsigned cxadc_array[256];
   unsigned cxadc_count = 0;
 
   char linear_name[64];
   strcpy(linear_name, "hw:CARD=CXADCADCClockGe");
-  unsigned int linear_rate = 78125;
-  unsigned int linear_channels = 3;
+  unsigned int linear_rate = 0;
+  unsigned int linear_channels = 0;
+  snd_pcm_format_t linear_format = SND_PCM_FORMAT_UNKNOWN;
+  snd_pcm_t* handle = NULL;
 
   for (int i = 0; i < argc; ++i) {
     unsigned num;
     if (1 == sscanf(argv[i], "cxadc%u", &num)) {
-      if (cxadc_count < sizeof(cxadc_array) / sizeof(*cxadc_array))
-        cxadc_array[cxadc_count++] = num;
+      if (cxadc_count < sizeof(cxadc_array) / sizeof(*cxadc_array)) {
+        unsigned idx = cxadc_count++;
+        cxadc_array[idx] = num;
+        g_state.cxadc[idx].fd = -1;
+      }
       continue;
     }
     char urlencoded[64];
     if (1 == sscanf(argv[i], "lname=%63s", urlencoded)) {
       urldecode2(linear_name, urlencoded);
+      continue;
+    }
+    if (1 == sscanf(argv[i], "lformat=%63s", urlencoded)) {
+      linear_format = snd_pcm_format_value(urlencoded);
       continue;
     }
     unsigned int rate = 0;
@@ -221,27 +233,19 @@ void file_start(int fd, int argc, char** argv) {
     }
   }
 
-
-  for (int i = 0; i < argc; ++i) {
-  }
-
-
   g_state.overflow_counter = 0;
 
   for (size_t i = 0; i < cxadc_count; ++i) {
     if (!atomic_ringbuffer_init(&g_state.cxadc[i].ring_buffer, 1 << 30)) {
+      snprintf(errstr, sizeof(errstr) - 1, "failed to allocate ringbuffer: %s", sys_errlist[errno]);
       goto error;
     }
   }
 
-  if (!atomic_ringbuffer_init(&g_state.linear.ring_buffer, (2 << 20) * 3 * linear_channels)) {
-    goto error;
-  }
+  int err = 0;
 
-  int err;
-  snd_pcm_t* handle;
   if ((err = snd_pcm_open(&handle, linear_name, SND_PCM_STREAM_CAPTURE, MODE)) < 0) {
-    fprintf(stderr, "cannot open ALSA device: %s\n", snd_strerror(err));
+    snprintf(errstr, sizeof(errstr) - 1, "cannot open ALSA device: %s", snd_strerror(err));
     goto error;
   }
 
@@ -249,27 +253,60 @@ void file_start(int fd, int argc, char** argv) {
   snd_pcm_hw_params_alloca(&hw_params);
 
   if ((err = snd_pcm_hw_params_any(handle, hw_params)) < 0) {
-    fprintf(stderr, "cannot initialize hardware parameter structure: %s\n", snd_strerror(err));
+    snprintf(errstr, sizeof(errstr) - 1, "cannot initialize hardware parameter structure: %s", snd_strerror(err));
     goto error;
   }
 
   if ((err = snd_pcm_hw_params_set_access(handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
-    fprintf(stderr, "cannot set access type: %s\n", snd_strerror(err));
+    snprintf(errstr, sizeof(errstr) - 1, "cannot set access type: %s", snd_strerror(err));
     goto error;
   }
 
-  if ((err = snd_pcm_hw_params_set_format(handle, hw_params, SND_PCM_FORMAT_S24_3LE)) < 0) {
-    fprintf(stderr, "cannot set sample format: %s\n", snd_strerror(err));
+  if (linear_rate) {
+    if ((err = snd_pcm_hw_params_set_rate(handle, hw_params, linear_rate, 0)) < 0) {
+      snprintf(errstr, sizeof(errstr) - 1, "cannot set sample rate: %s", snd_strerror(err));
+      goto error;
+    }
+  } else {
+    if ((err = snd_pcm_hw_params_get_rate(hw_params, &linear_rate, 0)) < 0) {
+      snprintf(errstr, sizeof(errstr) - 1, "cannot get sample rate: %s", snd_strerror(err));
+      goto error;
+    }
+  }
+
+  if (linear_channels) {
+    if ((err = snd_pcm_hw_params_set_channels(handle, hw_params, linear_channels)) < 0) {
+      snprintf(errstr, sizeof(errstr) - 1, "cannot set channel count: %s", snd_strerror(err));
+      goto error;
+    }
+  } else {
+    if ((err = snd_pcm_hw_params_get_channels(hw_params, &linear_channels)) < 0) {
+      snprintf(errstr, sizeof(errstr) - 1, "cannot get channel count: %s", snd_strerror(err));
+      goto error;
+    }
+  }
+
+  if (linear_format != SND_PCM_FORMAT_UNKNOWN) {
+    if ((err = snd_pcm_hw_params_set_format(handle, hw_params, linear_format)) < 0) {
+      snprintf(errstr, sizeof(errstr) - 1, "cannot set sample format: %s", snd_strerror(err));
+      goto error;
+    }
+  } else {
+    if ((err = snd_pcm_hw_params_get_format(hw_params, &linear_format)) < 0) {
+      snprintf(errstr, sizeof(errstr) - 1, "cannot get sample format: %s", snd_strerror(err));
+      goto error;
+    }
+  }
+
+  ssize_t format_size;
+  if ((format_size = snd_pcm_format_size(linear_format, 1)) < 0) {
+    snprintf(errstr, sizeof(errstr) - 1, "cannot get format size: %s", snd_strerror(err));
     goto error;
   }
 
-  if ((err = snd_pcm_hw_params_set_rate_near(handle, hw_params, &linear_rate, 0)) < 0) {
-    fprintf(stderr, "cannot set sample rate: %s\n", snd_strerror(err));
-    goto error;
-  }
-
-  if ((err = snd_pcm_hw_params_set_channels(handle, hw_params, linear_channels)) < 0) {
-    fprintf(stderr, "cannot set channel count: %s\n", snd_strerror(err));
+  size_t sample_size = linear_channels * format_size;
+  if (!atomic_ringbuffer_init(&g_state.linear.ring_buffer, (2 << 20) * sample_size)) {
+    snprintf(errstr, sizeof(errstr) - 1, "failed to allocate ringbuffer: %s", sys_errlist[errno]);
     goto error;
   }
 
@@ -277,7 +314,7 @@ void file_start(int fd, int argc, char** argv) {
   clock_gettime(CLOCK_MONOTONIC_RAW, &time1);
 
   if ((err = snd_pcm_hw_params(handle, hw_params)) < 0) {
-    fprintf(stderr, "cannot set hw parameters: %s\n", snd_strerror(err));
+    snprintf(errstr, sizeof(errstr) - 1, "cannot set hw parameters: %s", snd_strerror(err));
     goto error;
   }
 
@@ -285,27 +322,27 @@ void file_start(int fd, int argc, char** argv) {
   snd_pcm_sw_params_alloca(&sw_params);
 
   if ((err = snd_pcm_sw_params_current(handle, sw_params)) < 0) {
-    fprintf(stderr, "cannot query sw parameters: %s\n", snd_strerror(err));
+    snprintf(errstr, sizeof(errstr) - 1, "cannot query sw parameters: %s", snd_strerror(err));
     goto error;
   }
 
   if ((err = snd_pcm_sw_params_set_tstamp_mode(handle, sw_params, SND_PCM_TSTAMP_ENABLE)) < 0) {
-    fprintf(stderr, "cannot set tstamp mode: %s\n", snd_strerror(err));
+    snprintf(errstr, sizeof(errstr) - 1, "cannot set tstamp mode: %s", snd_strerror(err));
     goto error;
   }
 
   if ((err = snd_pcm_sw_params_set_tstamp_type(handle, sw_params, SND_PCM_TSTAMP_TYPE_MONOTONIC_RAW)) < 0) {
-    fprintf(stderr, "cannot set tstamp type: %s\n", snd_strerror(err));
+    snprintf(errstr, sizeof(errstr) - 1, "cannot set tstamp type: %s", snd_strerror(err));
     goto error;
   }
 
   if ((err = snd_pcm_sw_params(handle, sw_params)) < 0) {
-    fprintf(stderr, "cannot set sw parameters: %s\n", snd_strerror(err));
+    snprintf(errstr, sizeof(errstr) - 1, "cannot set sw parameters: %s", snd_strerror(err));
     goto error;
   }
 
   if ((err = snd_pcm_prepare(handle)) < 0) {
-    fprintf(stderr, "cannot prepare audio interface for use: %s\n", snd_strerror(err));
+    snprintf(errstr, sizeof(errstr) - 1, "cannot prepare audio interface for use: %s", snd_strerror(err));
     goto error;
   }
 
@@ -319,7 +356,7 @@ void file_start(int fd, int argc, char** argv) {
     sprintf(cxadc_name, "/dev/cxadc%u", cxadc_array[i]);
     const int cxadc_fd = open(cxadc_name, O_NONBLOCK);
     if (cxadc_fd < 0) {
-      perror("cannot open cxadc");
+      snprintf(errstr, sizeof(errstr) - 1, "cannot open cxadc: %s", sys_errlist[errno]);
       goto error;
     }
     g_state.cxadc[i].fd = cxadc_fd;
@@ -332,14 +369,13 @@ void file_start(int fd, int argc, char** argv) {
 
   const long linear_ns = timespec_to_nanos(&time2) - timespec_to_nanos(&time1);
   const long cxadc_ns = timespec_to_nanos(&time3) - timespec_to_nanos(&time2);
-  printf("starting linear took %ldns, starting cxadc took %ldns\n", linear_ns, cxadc_ns);
 
   g_state.linear.handle = handle;
 
   for (size_t i = 0; i < cxadc_count; ++i) {
     pthread_t thread_id;
     if ((err = pthread_create(&thread_id, NULL, cxadc_writer_thread, (void*)i) != 0)) {
-      fprintf(stderr, "can't create cxadc writer thread: %d\n", err);
+      snprintf(errstr, sizeof(errstr) - 1, "can't create cxadc writer thread: %s", sys_errlist[err]);
       goto error;
     }
     g_state.cxadc[i].writer_thread = thread_id;
@@ -347,21 +383,70 @@ void file_start(int fd, int argc, char** argv) {
 
   pthread_t thread_id;
   if ((err = pthread_create(&thread_id, NULL, linear_writer_thread, NULL) != 0)) {
-    fprintf(stderr, "can't create linear writer thread: %d\n", err);
+    snprintf(errstr, sizeof(errstr) - 1, "can't create linear writer thread: %s", sys_errlist[err]);
     goto error;
   }
   g_state.linear.writer_thread = thread_id;
 
   g_state.cap_state = State_Running;
-  dprintf(fd, "{\"state\": \"%s\", \"linear_ns\": %ld, \"cxadc_ns\": %ld}", capture_state_to_str(State_Running), linear_ns, cxadc_ns);
+  dprintf(
+    fd,
+    "{"
+    "\"state\": \"%s\","
+    "\"linear_ns\": %ld,"
+    "\"cxadc_ns\": %ld,"
+    "\"linear_rate\": %u,"
+    "\"linear_channels\": %u,"
+    "\"linear_format\": \"%s\""
+    "}",
+    capture_state_to_str(State_Running),
+    linear_ns,
+    cxadc_ns,
+    linear_rate,
+    linear_channels,
+    snd_pcm_format_name(linear_format)
+  );
   return;
 
 error:
   g_state.cap_state = State_Failed;
-  dprintf(fd, "{\"state\": \"%s\"}", capture_state_to_str(State_Failed));
+
+  if (g_state.linear.writer_thread) {
+    pthread_join(g_state.linear.writer_thread, NULL);
+    g_state.linear.writer_thread = 0;
+  }
+
+  for (size_t i = 0; i < cxadc_count; ++i) {
+    struct cxadc_state* cxadc = &g_state.cxadc[i];
+    if (cxadc->writer_thread) {
+      pthread_join(cxadc->writer_thread, NULL);
+      cxadc->writer_thread = 0;
+    }
+  }
+
+  if (handle)
+    snd_pcm_close(handle);
+
+  for (size_t i = 0; i < cxadc_count; ++i) {
+    struct cxadc_state* cxadc = &g_state.cxadc[i];
+    if (cxadc->fd != -1) {
+      close(cxadc->fd);
+      cxadc->fd = -1;
+    }
+    atomic_ringbuffer_free(&cxadc->ring_buffer);
+  }
+
+  dprintf(fd, "{\"state\": \"%s\", \"fail_reason\": \"%s\"}", capture_state_to_str(State_Failed), errstr);
+  g_state.cap_state = State_Idle;
 }
 
 void* cxadc_writer_thread(void* id) {
+  while (g_state.cap_state == State_Starting)
+    usleep(1000);
+
+  if (g_state.cap_state == State_Failed)
+    return NULL;
+
   struct atomic_ringbuffer* buf = &g_state.cxadc[(size_t)id].ring_buffer;
   const int fd = g_state.cxadc[(size_t)id].fd;
 
@@ -380,7 +465,7 @@ void* cxadc_writer_thread(void* id) {
       continue;
     }
     if (count < 0) {
-      perror("read failed");
+      fprintf(stderr, "read failed\n");
       break;
     }
 
@@ -392,30 +477,37 @@ void* cxadc_writer_thread(void* id) {
 
 void* linear_writer_thread(void* arg) {
   (void)arg;
+
+  while (g_state.cap_state == State_Starting)
+    usleep(1000);
+
+  if (g_state.cap_state == State_Failed)
+    return NULL;
+
   struct atomic_ringbuffer* buf = &g_state.linear.ring_buffer;
   snd_pcm_t* handle = g_state.linear.handle;
 
   while (g_state.cap_state != State_Stopping) {
     void* ptr = atomic_ringbuffer_get_write_ptr(buf);
     size_t len = atomic_ringbuffer_get_write_size(buf);
-    size_t len_samples = len / 9;
+    size_t len_samples = snd_pcm_bytes_to_samples(handle, (ssize_t)len);
     if (len_samples == 0) {
       ++g_state.overflow_counter;
       fprintf(stderr, "ringbuffer full, may be dropping samples!!! THIS IS BAD!\n");
       usleep(1000);
       continue;
     }
-    int count = snd_pcm_readi(handle, ptr, len_samples);
+    long count = snd_pcm_readi(handle, ptr, len_samples);
     if (count == 0 || count == -EAGAIN) {
       usleep(1);
       continue;
     }
     if (count < 0) {
-      fprintf(stderr, "snd_pcm_readi failed: %s\n", snd_strerror(-count));
+      fprintf(stderr, "snd_pcm_readi failed: %s\n", snd_strerror((int)count));
       break;
     }
 
-    atomic_ringbuffer_advance_written(buf, count * 9);
+    atomic_ringbuffer_advance_written(buf, snd_pcm_samples_to_bytes(handle, count));
   }
   snd_pcm_drop(handle);
   snd_pcm_close(handle);
@@ -485,8 +577,8 @@ void pump_ringbuffer_to_fd(int fd, struct atomic_ringbuffer* buf, _Atomic pthrea
       continue;
     }
     if (count < 0) {
-      perror("write failed");
-      return;
+      fprintf(stderr, "write failed: %s\n", sys_errlist[errno]);
+      break;
     }
 
     atomic_ringbuffer_advance_read(buf, count);

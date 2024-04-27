@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <errno.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,8 @@ int main(int argc, char* argv[]) {
     usage(argv[0]);
     exit(EXIT_FAILURE);
   }
+
+  signal(SIGPIPE, SIG_IGN);
 
   int server_fd;
 
