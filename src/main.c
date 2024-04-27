@@ -14,7 +14,7 @@
 #include "http.h"
 
 static void usage(const char* name) {
-  fprintf(stderr, "Usage: %s <port>|unix:<socket>", name);
+  fprintf(stderr, "Usage: %s version|<port>|unix:<socket>\n", name);
 }
 
 int main(int argc, char* argv[]) {
@@ -27,7 +27,10 @@ int main(int argc, char* argv[]) {
 
   int server_fd;
 
-  if (0 == strncmp(argv[1], "unix:", 5)) {
+  if (0 == strcmp(argv[1], "version")) {
+    puts("0.0.1");
+    exit(EXIT_SUCCESS);
+  } else if (0 == strncmp(argv[1], "unix:", 5)) {
     const char* path = argv[1] + 5;
     const int length = strlen(path);
     if (length == 0 || length >= 108) {
