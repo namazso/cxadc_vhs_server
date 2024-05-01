@@ -21,6 +21,7 @@ Endpoints provided:
 - GET `/cxadc`: Stream the data being captured from a CX card. Parameters:
   - `<number>`: Access the `<number>`th **captured** card (so if you capture `cxadc1` only, you can access it as 0, **not** 1)
 - GET `/linear`: Stream the data being captured from the ALSA device.
+- GET `/stats`: Capture statistics.
 - GET `/stop`: Stop the current capture. Reports back how many overflows happened.
 
 For more details such as returned JSON format test the endpoints or check the source code.
@@ -60,29 +61,61 @@ $ curl http://192.168.1.1:8080/stop
 
 The script `local-capture.sh` is included in the repository to aid with local captures. It runs the sever on a UNIX socket, which is the same thing as used for piping command outputs. The benefit of using the server is the sample drop resilient buffering and better starting point synchronization.
 
+#### Dependencies
+
+- bash
+- curl
+- jq
+- cxadc_vhs_server
+- ffmpeg (optional) with libsoxr (optional)
+
+You can install the first three from most distros' default repositories: 
+
+**RHEL / Fedora**
+
 ```text
-Usage: local-capture.sh [options] <basepath>
-    --video=#         Number of CX card to use for video capture
-    --hifi=#          Number of CX card to use for hifi capture
-    --linear=<device> ALSA device identifier for linear
-    --debug           Show commands executed
-    --help            Show usage information
+yum install bash curl jq
 ```
 
-Place the script next to the binary.
-
-Example usage:
+**Debian / Ubuntu**
 
 ```text
-$ ./local-capture.sh --video=0 --hifi=1 test
-Server started (PID 4367)
-server listening on port unix:/tmp/tmp.w4oNzQXSGg/server.sock
-PID 4381 is capturing video to test-video.u8
-PID 4382 is capturing hifi to test-hifi.u8
-PID 4383 is capturing linear to test-linear.s24
-Capture running...
-Press Ctrl+C to stop recording
-^C
+apt install bash curl jq
+```
+
+The `cxadc_vhs_server` binary can be obtained from releases, or compiled from sources. The binary releases support glibc 2.17 and later.
+
+A static ffmpeg build with libsoxr can be obtained from https://johnvansickle.com/ffmpeg/. If placed next to the script, it will be used instead of system ffmpeg.
+
+#### Usage
+
+```text
+Usage: local-capture.sh [options] <basepath>
+        --video=          Number of CX card to use for video capture (unset=disabled)
+        --hifi=           Number of CX card to use for hifi capture (unset=disabled)
+        --linear=         ALSA device identifier for linear (unset=default)
+        --add-date        Add current date and time to the filenames
+        --convert-linear  Convert linear to flac+u8
+        --compress-video  Compress video
+        --compress-hifi   Compress hifi
+        --resample-hifi   Resample hifi to 10 MSps
+        --debug           Show commands executed
+        --help            Show usage information
+```
+
+#### Example
+
+```text
+$ ./local-capture.sh --video=0 --hifi=1 --convert-linear --compress-video --compress-hifi --resample-hifi test
+Server started (PID 3854)
+server listening on unix:/tmp/tmp.qDMBd0Ynxu/server.sock
+PID 3872 is capturing video to test-video.ldf
+PID 3874 is capturing hifi to test-hifi.flac
+PID 3876 is capturing linear to test-linear.flac, headswitch to test-headswitch.u8
+Capture running... Press 'q' to stop the capture.
+Capturing for 0m 0s... Buffers:  0%  0%  0%
+Capturing for 0m 5s... Buffers:  0%  0%  0%
+q
 Stopping capture
 Encountered 0 overflows during capture
 Waiting for writes to finish...

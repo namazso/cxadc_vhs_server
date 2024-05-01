@@ -15,7 +15,7 @@ target_compile_options(cxadc_vhs_server PRIVATE
 
 target_compile_definitions(cxadc_vhs_server PRIVATE
         CXADC_VHS_SERVER_MAJOR=1
-        CXADC_VHS_SERVER_MINOR=3
+        CXADC_VHS_SERVER_MINOR=4
         CXADC_VHS_SERVER_PATCH=0
 )
 
