@@ -247,7 +247,13 @@ echo "Capture running... Press 'q' to stop the capture."
 
 while true; do
 	ELAPSED=$SECONDS
-	echo "Capturing for $((ELAPSED / 60))m $((ELAPSED % 60))s..."
+	STATS=$(curl -X GET --unix-socket "$SOCKET" -s --output - "http:/d/stats" || true);
+	if [[ -z "${STATS-}" ]]; then
+		STATS_MSG="Failed to get stats."
+	else
+		STATS_MSG="Buffers: $(echo "$STATS" | jq .linear.difference_pct | xargs printf '% 2s%% ')$(echo "$STATS" | jq .cxadc[].difference_pct | xargs printf '% 2s%% ')"
+	fi
+	echo "Capturing for $((ELAPSED / 60))m $((ELAPSED % 60))s... $STATS_MSG"
 	if read -r -t 5 -n 1 key; then
 		if [[ $key == "q" ]]; then
 			echo -e "\nStopping capture"

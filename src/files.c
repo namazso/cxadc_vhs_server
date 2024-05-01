@@ -109,6 +109,23 @@ void atomic_ringbuffer_advance_read(struct atomic_ringbuffer* ctx, size_t count)
   ctx->read += count;
 }
 
+// this is only usable for stats, do not rely on being correct
+void atomic_ringbuffer_get_stats(struct atomic_ringbuffer* ctx, size_t* read, size_t* written, size_t* difference) {
+  // we read `read` first, so that we never get negative results
+
+  size_t _read = atomic_load(&ctx->read);
+  size_t _written = atomic_load(&ctx->written);
+  size_t _difference = _written - _read;
+  if (_difference > ctx->buf_size)
+    _difference = ctx->buf_size;
+  if (read)
+    *read = _read;
+  if (written)
+    *written = _written;
+  if (difference)
+    *difference = _difference;
+}
+
 enum capture_state {
   State_Idle = 0,
   State_Starting,
@@ -618,6 +635,38 @@ void file_linear(int fd, int argc, char** argv) {
 }
 
 void file_stats(int fd, int argc, char** argv) {
+  const enum capture_state state = g_state.cap_state;
+  if (state != State_Running) {
+    dprintf(fd, "{\"state\":\"%s\"}", capture_state_to_str(state));
+  } else {
+    size_t linear_read, linear_written, linear_difference;
+    atomic_ringbuffer_get_stats(&g_state.linear.ring_buffer, &linear_read, &linear_written, &linear_difference);
+    dprintf(
+      fd,
+      "{\"state\":\"%s\",\"overflows\":%zu,\"linear\":{\"read\":%zu,\"written\":%zu,\"difference\":%zu,\"difference_pct\":%zu},\"cxadc\":[",
+      capture_state_to_str(state),
+      g_state.overflow_counter,
+      linear_read,
+      linear_written,
+      linear_difference,
+      linear_difference * 100 / g_state.linear.ring_buffer.buf_size
+    );
+    for (size_t i = 0; i < g_state.cxadc_count; ++i) {
+      size_t read, written, difference;
+      atomic_ringbuffer_get_stats(&g_state.cxadc[i].ring_buffer, &read, &written, &difference);
+      if (i != 0)
+        dprintf(fd, ",");
+      dprintf(
+        fd,
+        "{\"read\":%zu,\"written\":%zu,\"difference\":%zu,\"difference_pct\":%zu}",
+        read,
+        written,
+        difference,
+        difference * 100 / g_state.cxadc[i].ring_buffer.buf_size
+      );
+    }
+    dprintf(fd, "]}");
+  }
   (void)fd;
   (void)argc;
   (void)argv;
