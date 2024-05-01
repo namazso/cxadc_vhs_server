@@ -1,6 +1,6 @@
 # cxadc_vhs_server
 
-A terrible HTTP server made for capturing VHS with two cxadc cards and [cxadc-clockgen-mod](https://github.com/namazso/cxadc-clockgen-mod/).
+A terrible HTTP server made for capturing VHS with two cxadc cards and [cxadc-clock-generator-audio-adc](https://gitlab.com/wolfre/cxadc-clock-generator-audio-adc) or [cxadc-clockgen-mod](https://github.com/namazso/cxadc-clockgen-mod/).
 
 ## Usage
 
