@@ -494,7 +494,7 @@ void* linear_writer_thread(void* arg) {
   while (g_state.cap_state != State_Stopping) {
     void* ptr = atomic_ringbuffer_get_write_ptr(buf);
     size_t len = atomic_ringbuffer_get_write_size(buf);
-    size_t len_samples = snd_pcm_bytes_to_samples(handle, (ssize_t)len);
+    size_t len_samples = snd_pcm_bytes_to_frames(handle, (ssize_t)len);
     if (len_samples == 0) {
       ++g_state.overflow_counter;
       fprintf(stderr, "ringbuffer full, may be dropping samples!!! THIS IS BAD!\n");
@@ -511,7 +511,7 @@ void* linear_writer_thread(void* arg) {
       break;
     }
 
-    atomic_ringbuffer_advance_written(buf, snd_pcm_samples_to_bytes(handle, count));
+    atomic_ringbuffer_advance_written(buf, snd_pcm_frames_to_bytes(handle, count));
   }
   snd_pcm_drop(handle);
   snd_pcm_close(handle);
