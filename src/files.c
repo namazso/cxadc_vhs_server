@@ -267,14 +267,19 @@ void file_start(int fd, int argc, char** argv) {
   }
 
   if (linear_rate) {
+set_rate:
     if ((err = snd_pcm_hw_params_set_rate(handle, hw_params, linear_rate, 0)) < 0) {
       snprintf(errstr, sizeof(errstr) - 1, "cannot set sample rate: %s", snd_strerror(err));
       goto error;
     }
   } else {
-    if ((err = snd_pcm_hw_params_get_rate(hw_params, &linear_rate, 0)) < 0) {
-      snprintf(errstr, sizeof(errstr) - 1, "cannot get sample rate: %s", snd_strerror(err));
-      goto error;
+    if (snd_pcm_hw_params_get_rate(hw_params, &linear_rate, 0) < 0) {
+      if ((err = snd_pcm_hw_params_get_rate_max(hw_params, &linear_rate, 0)) < 0) {
+        snprintf(errstr, sizeof(errstr) - 1, "cannot get sample rate: %s", snd_strerror(err));
+        goto error;
+      } else {
+        goto set_rate;
+      }
     }
   }
 
