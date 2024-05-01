@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  printf("server listening on port %s\n", argv[1]);
+  printf("server listening on %s\n", argv[1]);
   while (1) {
     // client info
     struct sockaddr_in client_addr;
